@@ -1,233 +1,305 @@
-# Indonesia Road Infrastructure & Accessibility — Big Data Analytics
+# Indonesia Road Infrastructure & Accessibility: Big Data Analytics
 
-A full-stack Big Data analytics project analyzing road infrastructure, network
-connectivity, accessibility, and regional differences across Indonesia, built
-entirely from an OpenStreetMap (Geofabrik) extract.
+A full-stack Big Data project that analyzes road infrastructure, network
+connectivity and accessibility across Indonesian provinces. It combines two
+independent datasets:
 
-- **Backend:** Python, FastAPI, PySpark, GeoPandas, NetworkX, scikit-learn
+| Dataset | Source | Format | What it provides |
+|---|---|---|---|
+| **OpenStreetMap Indonesia** | [Geofabrik](https://download.geofabrik.de/asia/indonesia.html) | `.osm.pbf` (~1.6 GB, ~5 million road segments) | Road network geometry and attributes |
+| **Population by province (2026)** | [BPS, Statistics Indonesia](https://www.bps.go.id/) | CSV (38 provinces) | Population, growth rate, density, sex ratio |
+
+Joining the two lets the project measure accessibility relative to the people
+served, for example **road length per 1,000 people**, and not only road
+density per square kilometre.
+
+- **Backend:** Python 3.11, FastAPI, PySpark, GeoPandas, NetworkX, scikit-learn, PyOsmium
 - **Frontend:** React, Vite, Material UI, React-Leaflet, Recharts
-- **No database required.** Processed artifacts are Parquet / JSON / GeoJSON files.
+- **No database.** Processed data is stored as Parquet, JSON and GeoJSON files.
 
 ---
 
-## 1. Project Structure
+## 1. Project structure
 
 ```text
 indonesia-osm-bigdata/
 ├── backend/
-│   ├── app/                 # FastAPI application (API, services, config)
-│   ├── processing/          # The Big Data pipeline (run this first)
+│   ├── app/                      # FastAPI application (API, services, config)
+│   ├── processing/               # The big data pipeline
+│   │   ├── extract_osm.py        # PBF extraction (PyOsmium, streaming)
+│   │   ├── preprocess.py         # Cleaning, geodesic length, province join
+│   │   ├── aggregate_regions.py  # PySpark aggregation
+│   │   ├── graph_analysis.py     # NetworkX graph analytics (checkpointed)
+│   │   ├── feature_engineering.py# Region features + accessibility index
+│   │   ├── demographic_join.py   # BPS population join (second dataset)
+│   │   ├── train_ml.py           # Random Forest classification
+│   │   ├── export_geojson.py     # Per-province GeoJSON for the map
+│   │   └── run_pipeline.py       # Runs all stages
+│   ├── prepare_boundaries.py     # One-off: converts the province boundary source
 │   ├── data/
-│   │   ├── raw/              <- put indonesia-latest.osm.pbf here
-│   │   ├── processed/         (generated: roads.parquet, etc.)
-│   │   ├── geojson/           (generated: per-province GeoJSON)
-│   │   ├── models/             (generated: accessibility_model.pkl)
-│   │   └── outputs/            (generated: overview.json, ml_metrics.json, etc.)
+│   │   ├── raw/                  # Put indonesia-latest.osm.pbf here
+│   │   │   └── population_bps_2026.csv   # BPS population data (included in repo)
+│   │   ├── geojson/              # Province boundary file (included) + generated files
+│   │   ├── processed/            # Generated: Parquet files, graph checkpoints
+│   │   ├── models/               # Generated: accessibility_model.pkl
+│   │   └── outputs/              # Generated: JSON summaries
 │   └── requirements.txt
-├── frontend/                # React + MUI dashboard
+├── frontend/                     # React + Material UI dashboard
 └── .gitignore
 ```
+
+The raw `.osm.pbf` file is **not** in the repository because of its size.
+Everything else needed to run the pipeline is, including the BPS CSV and the
+province boundary file.
 
 ---
 
 ## 2. Prerequisites
 
-- Python 3.10 or 3.11 (PySpark and GeoPandas are most reliably installed on
-  these versions; Python 3.12+ can work but may need newer wheels)
-- Java 11 or 17 (required by PySpark — `java -version` should work)
-- Node.js 18+
-- ~4 GB of free RAM for full national processing (PySpark is configured for
-  2 GB driver memory by default; adjust in `processing/aggregate_regions.py`
-  if needed)
+| Tool | Version | Notes |
+|---|---|---|
+| Python | **3.11** | Python 3.14 has no prebuilt wheels for pandas and the geospatial packages, and `pip install` fails there |
+| Java | **17** | Required by PySpark. Check with `java -version` |
+| Node.js | 18 or newer | For the frontend |
+| RAM | 16 GB recommended | Full national run was tested on 16 GB |
+
+On Windows, after installing Python, Java or Node, close all terminals and
+fully restart VS Code. Terminals only see new PATH entries after a restart.
 
 ---
 
-## 3. Backend Setup
+## 3. Backend setup
 
-```bash
+The commands below are for Windows PowerShell. Run them one per line (older
+PowerShell does not support `&&`).
+
+```powershell
 cd backend
-python -m venv venv
+py -3.11 -m venv venv
+.\venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-Activate the virtual environment:
+If activation is blocked by the execution policy, run this once:
 
-- Windows: `venv\Scripts\activate`
-- macOS/Linux: `source venv/bin/activate`
-
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 ```
 
-> **Note on `pyrosm` / `osmium`:** these are the two supported PBF-reading
-> backends. `pyrosm` is tried first because it is simpler; if it fails to
-> import or errors during extraction, the pipeline automatically falls back
-> to a streaming `pyosmium` extractor that uses effectively constant memory.
-> You do not need to choose one manually.
+On macOS/Linux, use `python3.11 -m venv venv` and `source venv/bin/activate`.
 
-### Place the raw dataset
+Always check that your prompt starts with `(venv)` before running any
+`python` command. Without it, you are using the system Python, which does not
+have the packages installed.
 
-Download `indonesia-latest.osm.pbf` from Geofabrik if you don't already have it:
+### Get the OSM data
+
+Download `indonesia-latest.osm.pbf` from Geofabrik:
 
 ```text
 https://download.geofabrik.de/asia/indonesia-latest.osm.pbf
 ```
 
-Copy it into:
+Geofabrik downloads can be slow from some regions. A multi-connection
+downloader such as `aria2c` helps. Geofabrik may also name the file with a
+date, such as `indonesia-260918.osm.pbf`. Rename it so the file is exactly:
 
 ```text
 backend/data/raw/indonesia-latest.osm.pbf
 ```
 
-The pipeline and API both check for this file and print a clear message
-(never a raw stack trace) if it's missing.
+### Population data (BPS)
 
-### Run the processing pipeline
+`backend/data/raw/population_bps_2026.csv` is already in the repository. It is
+the BPS table *Penduduk, Laju Pertumbuhan Penduduk, Distribusi Persentase
+Penduduk, Kepadatan Penduduk, Rasio Jenis Kelamin Penduduk Menurut Provinsi*
+(2026). To use a newer table, export it from bps.go.id as CSV and keep the same
+column names, or update `BPS_COLUMN_MAP` in `processing/demographic_join.py`.
 
-```bash
-# Fast development mode (processes a small Jakarta-area subset in seconds/minutes)
-python processing/run_pipeline.py --sample
+### Province boundaries
 
-# Full national processing (processes the entire 1.6GB extract; can take a
-# while depending on your machine -- extraction and graph analytics are the
-# slowest stages)
-python processing/run_pipeline.py --full
-```
-
-The pipeline prints progress for all 13 stages, e.g.:
-
-```text
-[1/13] Checking raw OSM file...
-[2/13] Extracting roads and administrative boundaries...
-...
-[13/13] Processing complete.
-```
-
-Re-run this any time you want to regenerate the processed data (e.g. after
-switching from `--sample` to `--full`, or after tuning
-`ACCESSIBILITY_WEIGHTS` in `app/config.py`).
-
-### Start the API
-
-```bash
-uvicorn app.main:app --reload
-```
-
-- API base URL: `http://127.0.0.1:8000`
-- Interactive Swagger docs: `http://127.0.0.1:8000/docs`
-- Health check: `GET /api/health`
-
-If you query the API before running the pipeline, endpoints return an
-HTTP 503 with a clear `"Dataset has not been processed yet..."` message
-instead of an error or fabricated data.
+PyOsmium streams the PBF and does not extract administrative boundaries. Roads
+are assigned to provinces with a spatial join against
+`backend/data/geojson/_province_boundaries_fallback.geojson`, which is included
+in the repository. See [Known limitations](#8-known-limitations) for what this
+means for province names.
 
 ---
 
-## 4. Frontend Setup
+## 4. Run the pipeline
 
-```bash
+```powershell
+# Quick development run: small Jakarta-area subset
+python processing\run_pipeline.py --sample
+
+# Full national run
+python processing\run_pipeline.py --full
+
+# Re-run only the later stages, reusing the existing roads.parquet
+python processing\run_pipeline.py --resume
+```
+
+The pipeline has 13 stages and prints progress for each one:
+
+| Stages | What happens |
+|---|---|
+| 1-2 | Validate the PBF file and extract the road network |
+| 3-6 | Clean records, compute geodesic length, join roads to provinces, save Parquet |
+| 7 | PySpark aggregation by province and road type |
+| 8 | NetworkX graph analytics per province (nodes, edges, degree, components, centrality) |
+| 9 | Region features, then **BPS population join** and per-capita metrics |
+| 10 | Accessibility score and Low / Medium / High class |
+| 11 | Random Forest training and evaluation |
+| 12 | Simplified GeoJSON for the map |
+| 13 | Write pipeline status |
+
+Reference timings from a full run on an Intel Core i5-13420H with 16 GB RAM:
+extraction about 5 minutes, preprocessing about 5 minutes, PySpark aggregation
+about 10 seconds, **graph analytics about 66 minutes**, GeoJSON export about 2 minutes.
+
+### Resuming and checkpoints
+
+Stage 8 saves each province's result to `backend/data/processed/graph_checkpoints/`
+as soon as that province finishes. If the run is interrupted, run it again and
+finished provinces are loaded from disk instead of recomputed. Only the
+province that was in progress is redone. Delete the folder to force a full
+recompute.
+
+`--resume` skips stages 1-6 when `backend/data/processed/roads.parquet` exists.
+Use a full `--full` run only when the raw PBF or the extraction/preprocessing code changes.
+
+### Run the API
+
+```powershell
+uvicorn app.main:app --reload
+```
+
+- API: `http://127.0.0.1:8000`
+- Swagger docs: `http://127.0.0.1:8000/docs`
+- Before the pipeline has run, endpoints return HTTP 503 with a message saying the dataset has not been processed. They never return placeholder data.
+
+Restart `uvicorn` after re-running the pipeline so it loads the new files.
+
+---
+
+## 5. Frontend setup
+
+In a second terminal:
+
+```powershell
 cd frontend
 npm install
 npm run dev
 ```
 
-- Dashboard URL: `http://localhost:5173`
-- The Vite dev server proxies `/api/*` requests to `http://127.0.0.1:8000`
-  (see `vite.config.js`), so make sure the backend is running first.
+Open `http://localhost:5173`. Vite proxies `/api/*` to `http://127.0.0.1:8000`,
+so the backend must be running.
+
+### Dashboard pages
+
+| Page | Content |
+|---|---|
+| Overview | National KPIs, road type distribution, top provinces by length and density, **road km per 1,000 people** |
+| Map Explorer | Per-province road map with road type filters. Major roads are always kept complete; minor roads are sampled for large provinces |
+| Road Infrastructure | Road length and count by type and province, density, **road length per capita by province** |
+| Regional Comparison | Side-by-side comparison of two provinces, including **population and road km per 1,000 people** |
+| Machine Learning | Metrics, confusion matrix, feature importance (includes **population density**), province ranking |
+| Graph Analytics | Per-province graph summary, most important intersections, degree distribution |
+| Data Explorer | Server-side paginated road records |
+| About Dataset | Sources, processing status, limitations, **BPS population dataset notes** |
 
 ---
 
-## 5. Typical First-Run Workflow
+## 6. Methodology
 
-```bash
-# 1. Place the dataset
-cp /path/to/indonesia-latest.osm.pbf backend/data/raw/
+- **Accessibility index.** A weighted combination of min-max normalized
+  metrics: road density, intersection density, major-road ratio, network
+  density and average node degree. The weights and the Low (0-39) / Medium
+  (40-69) / High (70-100) thresholds are in `backend/app/config.py`.
+- **Population join.** `demographic_join.py` merges BPS population into the
+  region features and adds `road_km_per_1000_people`. Province names are
+  matched case-insensitively, with an explicit mapping
+  (`PROVINCE_NAME_MAP_TO_BPS` in `config.py`) for names that differ between the
+  boundary source and BPS. Provinces with no safe match get `null` population
+  instead of a guessed value.
+- **Machine learning.** A Random Forest is trained to reproduce the
+  index-derived classes from the underlying features, which now include
+  `population_density_bps`. This is not supervised learning against an
+  official label, because no official accessibility label exists in OpenStreetMap.
+- **Graph analytics.** One graph per province. Exact betweenness centrality is
+  too expensive at this scale, so provinces above 3,000 nodes use a sampled
+  approximation (k = 500). This is flagged in the API and the UI. The top 20
+  nodes per province are stored.
 
-# 2. Process it (start with --sample to verify everything works quickly)
-cd backend
-python processing/run_pipeline.py --sample
+### Main generated files
 
-# 3. Start the API
-uvicorn app.main:app --reload
-
-# 4. In a second terminal, start the frontend
-cd frontend
-npm install
-npm run dev
-
-# 5. Open http://localhost:5173
-```
-
-Once you've confirmed the dashboard works end-to-end in sample mode, switch
-to full processing:
-
-```bash
-python processing/run_pipeline.py --full
-# then restart uvicorn so it picks up the new processed files
-```
-
----
-
-## 6. Where Things Are Generated
-
-| File | Produced by | Used by |
-|---|---|---|
-| `data/processed/roads.parquet` | `preprocess.py` | almost everything |
-| `data/processed/province_summary.parquet` | `aggregate_regions.py` (PySpark) | Overview, Road Infrastructure |
-| `data/processed/graph_metrics.parquet` | `graph_analysis.py` (NetworkX) | Graph Analytics, ML features |
-| `data/processed/region_features.parquet` | `feature_engineering.py` | Regional Comparison, ML |
-| `data/processed/accessibility_scores.parquet` | `feature_engineering.py` | Machine Learning, Overview |
-| `data/models/accessibility_model.pkl` | `train_ml.py` (scikit-learn) | ML API endpoints |
-| `data/geojson/<province>.geojson` | `export_geojson.py` | Map Explorer |
-| `data/outputs/*.json` | various stages | API JSON responses |
-| `data/outputs/pipeline_status.json` | `run_pipeline.py` | "processed" status shown in UI |
-
-## 7. Re-running Preprocessing / Regenerating Specific Stages
-
-The pipeline is modular — you can import and re-run any single stage from a
-Python shell inside `backend/` if you only need to regenerate part of the
-output (e.g. after editing `ACCESSIBILITY_WEIGHTS`):
-
-```python
-import pandas as pd
-from processing.feature_engineering import build_region_features, compute_accessibility_index
-
-roads = pd.read_parquet("data/processed/roads.parquet")
-features = build_region_features(boundaries=None)  # boundaries already baked into province col
-compute_accessibility_index(features)
-```
-
-For a full, guaranteed-consistent regeneration, just re-run
-`python processing/run_pipeline.py --full` (or `--sample`).
+| File | Produced by |
+|---|---|
+| `data/processed/roads.parquet`, `nodes.parquet` | `preprocess.py` |
+| `data/processed/province_summary.parquet` | `aggregate_regions.py` (PySpark) |
+| `data/processed/graph_metrics.parquet`, `graph_node_centrality.parquet` | `graph_analysis.py` |
+| `data/processed/region_features.parquet`, `demographics.parquet` | `feature_engineering.py`, `demographic_join.py` |
+| `data/processed/accessibility_scores.parquet`, `ml_predictions.parquet` | `feature_engineering.py`, `train_ml.py` |
+| `data/models/accessibility_model.pkl` | `train_ml.py` |
+| `data/geojson/<province>.geojson` | `export_geojson.py` |
+| `data/outputs/*.json` | various stages |
 
 ---
 
-## 8. Methodology Notes
+## 7. Data sources and attribution
 
-- **Province assignment:** roads are spatially joined to `admin_level=4`
-  boundaries extracted from the same PBF (via `pyrosm.get_boundaries`), with
-  a bundled fallback GeoJSON path (`data/geojson/_province_boundaries_fallback.geojson`)
-  if you supply one. If neither is available, roads are labeled `"Unknown"`
-  rather than guessed.
-- **Accessibility index:** a transparent, weighted combination of normalized
-  road-network metrics (road density, intersection density, major-road
-  ratio, network density, average node degree). Weights and Low/Medium/High
-  thresholds live in `backend/app/config.py` and are meant to be tuned.
-- **Machine learning:** a Random Forest is trained to reproduce the
-  index-derived Low/Medium/High classes from the underlying raw features —
-  this is explicitly **not** based on any official ground-truth accessibility
-  label, since none exists in OpenStreetMap.
-- **Graph analytics:** graphs are built per-province (not one national
-  graph) because exact betweenness centrality is computationally
-  unreasonable at national scale. Provinces with very large graphs use a
-  k-sampled approximation, flagged in both the API response and the UI.
+- Road data: © OpenStreetMap contributors, available under the
+  [Open Database License (ODbL)](https://www.openstreetmap.org/copyright).
+  Extract provided by Geofabrik.
+- Population data: Badan Pusat Statistik (BPS), Statistics Indonesia.
+- Province boundaries: a community GeoJSON from the
+  [superpikar/indonesia-geojson](https://github.com/superpikar/indonesia-geojson)
+  repository, converted with `prepare_boundaries.py`. Check that repository's
+  terms before redistributing the file outside this project.
+- Map tiles: OpenStreetMap standard tiles with a CSS filter to mute their colours.
 
-## 9. Data Limitations
+---
 
-OpenStreetMap is community-maintained and its completeness varies by
-location. Road existence does not imply road quality. OSM alone cannot
-measure traffic congestion or real travel demand. The accessibility score
-in this project describes road-network structural characteristics only and
-is not an official Indonesian government accessibility index. See the
-**About Dataset** page in the dashboard for the full list of limitations.
+## 8. Known limitations
+
+- **Province boundaries are outdated.** The boundary source has 32 provinces
+  and predates Indonesia's 2022 Papua split (BPS lists 38 provinces). It also
+  uses old names such as `Irian Jaya Barat`, `Irian Jaya Tengah` and
+  `Irian Jaya Timur`, has no Kepulauan Riau, Sulawesi Barat or Kalimantan
+  Utara polygons, and contains the typo `Probanten` for Banten.
+- **Population join covers 31 of 32 provinces.** `Irian Jaya Timur` has no
+  safe modern BPS equivalent and shows population as unavailable. Roads in
+  provinces that have no polygon are assigned to a neighbouring province, so
+  per-province totals for those areas are approximate.
+- **Class imbalance in the ML task.** The accessibility index gives about 30
+  Low, 1 Medium and 1 High province. With so few provinces and such imbalance,
+  accuracy is not a reliable measure. Use macro F1 and treat the per-class
+  results as illustrative.
+- **OpenStreetMap is community-maintained.** Completeness varies by region,
+  road existence does not imply road quality, and OSM alone cannot measure
+  congestion or travel demand.
+- **The accessibility score is not an official index.** It describes road
+  network structure relative to area and population. Low-scoring provinces
+  are candidates for further assessment, not proof that infrastructure is needed.
+- **Batch processing.** Data comes from one static snapshot of each source.
+  Geofabrik also publishes incremental `.osc` diffs, which could be used to
+  update the data without reprocessing everything.
+- **Spark runs in local mode** on a single machine, not on a cluster.
+- **Pipeline status label.** After `--resume`, `data/outputs/pipeline_status.json`
+  keeps the mode recorded by the last full pipeline run. If that run was a
+  `--sample` run, the About Dataset page keeps showing "sample mode" even
+  though the data is the full dataset.
+
+---
+
+## 9. Troubleshooting
+
+| Problem | Cause and fix |
+|---|---|
+| `Unable to find a usable engine ... pyarrow` | The venv is not active. The prompt must start with `(venv)` |
+| `pip install` fails building pandas | Wrong Python version. Use Python 3.11 |
+| `java` not recognized, or PySpark fails to start | Install Java 17 and restart the terminal and VS Code |
+| `Raw OSM file not found` | The file must be named exactly `indonesia-latest.osm.pbf` and sit in `backend/data/raw/` |
+| Dashboard says the dataset has not been processed | Run the pipeline, then restart `uvicorn` |
+| Map shows an "API key required" watermark | The basemap URL points at CARTO tiles. Use the OpenStreetMap tile URL in the map pages |
