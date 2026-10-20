@@ -1,0 +1,34 @@
+# --- Web framework ---
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+python-multipart==0.0.9
+
+# --- Data processing ---
+pandas==2.2.2
+pyarrow==17.0.0
+numpy==1.26.4
+
+# --- Geospatial ---
+geopandas==0.14.4
+shapely==2.0.5
+pyproj==3.6.1
+fiona==1.9.6
+
+# --- OSM PBF reading ---
+osmium==4.0.2
+
+# --- Big data processing ---
+pyspark==3.5.2
+
+# --- Graph analytics ---
+networkx==3.3
+scipy==1.13.1
+
+# --- Machine learning ---
+scikit-learn==1.5.1
+joblib==1.4.2
+
+# --- Utilities ---
+python-dotenv==1.0.1
+tqdm==4.66.5

@@ -1,0 +1,7 @@
+/* Desaturates the OSM base map tiles so its own road rendering (which
+   uses the same red/orange/yellow palette as our data overlay) fades
+   into a neutral gray background instead of competing with the colored
+   road-type overlay drawn on top of it. */
+.muted-tiles {
+  filter: grayscale(0.85) brightness(1.05) contrast(0.9) saturate(0.4);
+}
