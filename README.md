@@ -7,7 +7,7 @@ independent datasets:
 | Dataset | Source | Format | What it provides |
 |---|---|---|---|
 | **OpenStreetMap Indonesia** | [Geofabrik](https://download.geofabrik.de/asia/indonesia.html) | `.osm.pbf` (~1.6 GB, ~5 million road segments) | Road network geometry and attributes |
-| **Population by province (2026)** | [BPS, Statistics Indonesia](https://www.bps.go.id/) | CSV (38 provinces) | Population, growth rate, density, sex ratio |
+| **Population by province (2026)** | [BPS, Statistics Indonesia](https://www.bps.go.id/id/statistics-table/3/V1ZSbFRUY3lTbFpEYTNsVWNGcDZjek53YkhsNFFUMDkjMyMwMDAw/jumlah-penduduk--laju-pertumbuhan-penduduk--distribusi-persentase-penduduk--kepadatan-penduduk--rasio-jenis-kelamin-penduduk-menurut-provinsi.html?year=2026) | CSV (38 provinces) | Population, growth rate, density, sex ratio |
 
 Joining the two lets the project measure accessibility relative to the people
 served, for example **road length per 1,000 people**, and not only road
