@@ -243,9 +243,9 @@ export default function Overview() {
             <Stack spacing={1}>
               {insight1 && <Typography variant="body2">{insight1}</Typography>}
               <Typography variant="body2">{insight2}</Typography>
-              <Typography variant="caption" sx={{ color: "text.secondary" }}>
+              {/* <Typography variant="caption" sx={{ color: "text.secondary" }}>
                 Insights are computed directly from the processed dataset, not generated text.
-              </Typography>
+              </Typography> */}
             </Stack>
           </ChartPanel>
         </Grid>

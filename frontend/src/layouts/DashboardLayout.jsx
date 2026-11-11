@@ -63,7 +63,7 @@ function SidebarContent() {
           </Box>
           <Box>
             <Typography variant="subtitle2" sx={{ lineHeight: 1.1, fontWeight: 700 }}>
-              JalanAnalytics
+              Project Big Data
             </Typography>
             <Typography variant="caption" sx={{ color: "text.secondary" }}>
               Indonesia OSM
